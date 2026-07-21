@@ -672,7 +672,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDeleg
         let week = Int((snapshot.weekRemaining() * 100).rounded())
         let usage = snapshot.usageRemainingPercent
         statusItem.button?.title = "\(ProviderConfig.menuPrefix) \(usage)%"
-        statusItem.button?.toolTip = "Week remaining: \(week)% · Usage remaining: \(usage)%"
+        statusItem.button?.toolTip = "Usage remaining: \(usage)% · Week remaining: \(week)%"
     }
 
     private func startClickOutsideMonitors() {
