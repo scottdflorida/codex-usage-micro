@@ -8,6 +8,7 @@ staging_root=$(mktemp -d "${TMPDIR:-/private/tmp}/codex-usage-micro-build.XXXXXX
 staging_app="$staging_root/$app_name.app"
 contents_dir="$staging_app/Contents"
 binary_dir="$contents_dir/MacOS"
+source_files=("$project_dir"/Sources/*.swift)
 
 trap 'rm -rf "$staging_root"' EXIT
 
@@ -15,15 +16,19 @@ mkdir -p "$binary_dir" "$project_dir/build/ModuleCache"
 
 swiftc \
   -O \
+  -whole-module-optimization \
   -parse-as-library \
+  -swift-version 6 \
+  -strict-concurrency=complete \
+  -warnings-as-errors \
   -target arm64-apple-macosx13.0 \
   -module-cache-path "$project_dir/build/ModuleCache" \
   -framework AppKit \
   -framework Foundation \
-  "$project_dir/Sources/CodexUsageMicro.swift" \
-  "$project_dir/Sources/RefreshConfiguration.swift" \
+  "${source_files[@]}" \
   -o "$binary_dir/CodexUsageMicro"
 
+plutil -lint "$project_dir/Info.plist" >/dev/null
 cp "$project_dir/Info.plist" "$contents_dir/Info.plist"
 
 if [[ -e "$app_dir" ]]; then

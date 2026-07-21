@@ -32,6 +32,23 @@ No API key, server, database, package manager, or external dependency is require
 
 To change the automatic refresh cadence, edit [`Sources/RefreshConfiguration.swift`](Sources/RefreshConfiguration.swift) and rebuild.
 
+## Development
+
+The app is deliberately dependency-free. AppKit owns the menu-bar UI, while a small async client speaks newline-delimited JSON-RPC to `codex app-server --stdio`. Domain calculations and response decoding are kept independent from AppKit so they remain deterministic and testable.
+
+Run the complete local check with:
+
+```sh
+./test.sh
+./build.sh
+```
+
+`test.sh` runs strict `swift-format` lint, the dependency-free unit suite, and a full Swift 6 complete-concurrency type-check with warnings treated as errors. `build.sh` produces and verifies an ad-hoc-signed app bundle in `build/`. Both scripts run in CI on macOS.
+
+## Privacy and security
+
+The app launches the locally installed Codex executable and reads only the account rate-limit response. It does not accept network connections, persist account data, execute shell commands, or send telemetry of its own. The Codex process inherits the normal local Codex configuration and authentication context.
+
 ## License
 
 [MIT](LICENSE)
