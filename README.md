@@ -74,6 +74,9 @@ account error clears the reading.
 
 For local integrations, run the built executable with `--snapshot`. Output is stable and line-oriented: `limit_0` is
 weekly usage and `limit_1` is five-hour usage. An unavailable window is omitted without renumbering the other one.
+When Codex reports per-model limit buckets, each adds `model_<limitId>_time_remaining`,
+`model_<limitId>_usage_remaining`, and `model_<limitId>_resets_at` lines after the pool lines, ordered by limit
+identifier.
 
 ## Troubleshooting
 

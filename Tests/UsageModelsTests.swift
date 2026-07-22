@@ -58,6 +58,30 @@ func usageModelTests() -> [TestCase] {
                 "expected a five-hour-only report to be valid"
             )
         },
+        TestCase(name: "per-model windows extend expiry but do not substitute for the main pool") {
+            let model = ModelUsage(
+                limitId: "codex_bengalfox",
+                displayName: "GPT-5.3-Codex-Spark",
+                snapshot: snapshot(usedPercent: 25, resetOffset: 60)
+            )
+            try expectEqual(UsageReport(weekly: nil, fiveHour: nil, models: [model]), nil)
+
+            let expired = snapshot(usedPercent: 25, resetOffset: 0)
+            guard let report = UsageReport(weekly: expired, fiveHour: nil, models: [model]) else {
+                throw TestFailure(description: "expected a valid report fixture")
+            }
+            try expect(
+                report.hasUnexpiredUsage(at: referenceDate),
+                "expected the per-model window to keep the report unexpired"
+            )
+            guard let bare = UsageReport(weekly: expired, fiveHour: nil) else {
+                throw TestFailure(description: "expected a valid report fixture")
+            }
+            try expect(
+                !bare.hasUnexpiredUsage(at: referenceDate),
+                "expected an expired report without model windows to clear"
+            )
+        },
         TestCase(name: "time remaining uses the configured window") {
             let value = snapshot(
                 usedPercent: 25,

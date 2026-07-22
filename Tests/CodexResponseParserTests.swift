@@ -3,8 +3,12 @@ import Foundation
 func codexResponseParserTests() -> [TestCase] {
     let referenceNow = Date(timeIntervalSince1970: 1_700_000_000)
 
+    func parse(_ json: String, now: Date) throws -> UsageReport {
+        try CodexResponseParser.parseRateLimitsResponse(Data(json.utf8), now: now)
+    }
+
     func parse(_ json: String) throws -> UsageReport {
-        try CodexResponseParser.parseRateLimitsResponse(Data(json.utf8), now: referenceNow)
+        try parse(json, now: referenceNow)
     }
 
     return [
@@ -330,6 +334,193 @@ func codexResponseParserTests() -> [TestCase] {
                     #"{"result":{"rateLimits":{"primary":{"usedPercent":-0.5,"windowDurationMins":10080,"resetsAt":1700001000}}}}"#
                 )
             }
+        },
+        TestCase(name: "per-model buckets surface alongside the codex pool") {
+            let report = try parse(
+                """
+                {"result":{"rateLimitsByLimitId":{
+                  "codex":{
+                    "primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":1785009000},
+                    "secondary":{"usedPercent":32,"windowDurationMins":10080,"resetsAt":1785300000}
+                  },
+                  "codex_bengalfox":{
+                    "limitId":"codex_bengalfox",
+                    "limitName":"GPT-5.3-Codex-Spark",
+                    "primary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":1785346807},
+                    "secondary":null,
+                    "planType":"prolite"
+                  }
+                }}}
+                """,
+                now: Date(timeIntervalSince1970: 1_785_000_000)
+            )
+            try expectEqual(report.fiveHour?.usedPercent, 12)
+            try expectEqual(report.weekly?.usedPercent, 32)
+            try expectEqual(report.models.count, 1)
+            try expectEqual(report.models.first?.limitId, "codex_bengalfox")
+            try expectEqual(report.models.first?.displayName, "GPT-5.3-Codex-Spark")
+            try expectEqual(report.models.first?.snapshot.usedPercent, 0)
+            try expectEqual(report.models.first?.snapshot.windowDurationMinutes, 10_080)
+            try expectEqual(
+                report.models.first?.snapshot.resetsAt,
+                Date(timeIntervalSince1970: 1_785_346_807)
+            )
+        },
+        TestCase(name: "per-model buckets without a limit name are ignored") {
+            let report = try parse(
+                """
+                {"result":{"rateLimitsByLimitId":{
+                  "codex":{"primary":{"usedPercent":32,"windowDurationMins":10080,"resetsAt":1700300000}},
+                  "codex_bengalfox":{"limitId":"codex_bengalfox","limitName":"",
+                    "primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "codex_lynx":{"limitId":"codex_lynx",
+                    "primary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1700346807}}
+                }}}
+                """
+            )
+            try expectEqual(report.weekly?.usedPercent, 32)
+            try expectEqual(report.models, [])
+        },
+        TestCase(name: "malformed per-model buckets are ignored without harming the codex pool") {
+            let report = try parse(
+                """
+                {"result":{"rateLimitsByLimitId":{
+                  "codex":{"primary":{"usedPercent":32,"windowDurationMins":10080,"resetsAt":1700300000}},
+                  "codex_bengalfox":{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark",
+                    "primary":{"usedPercent":150,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "codex_lynx":{"limitId":"codex_lynx","limitName":"GPT-5.3-Codex-Lynx",
+                    "primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1699000000}},
+                  "future-product":"unfamiliar"
+                }}}
+                """
+            )
+            try expectEqual(report.weekly?.usedPercent, 32)
+            try expectEqual(report.models, [])
+        },
+        TestCase(name: "per-model buckets are ordered by limit id") {
+            let report = try parse(
+                """
+                {"result":{"rateLimitsByLimitId":{
+                  "codex":{
+                    "primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":1700009000},
+                    "secondary":{"usedPercent":32,"windowDurationMins":10080,"resetsAt":1700300000}
+                  },
+                  "codex_lynx":{"limitId":"codex_lynx","limitName":"GPT-5.3-Codex-Lynx",
+                    "primary":{"usedPercent":20,"windowDurationMins":1440,"resetsAt":1700080000}},
+                  "codex_bengalfox":{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark",
+                    "primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1700346807}}
+                }}}
+                """
+            )
+            try expectEqual(report.models.map(\.limitId), ["codex_bengalfox", "codex_lynx"])
+            try expectEqual(
+                report.models.map(\.displayName),
+                ["GPT-5.3-Codex-Spark", "GPT-5.3-Codex-Lynx"]
+            )
+        },
+        TestCase(name: "per-model buckets never substitute for the main pool") {
+            try expectThrows(CodexResponseParsingError.missingUsableWindow) {
+                _ = try parse(
+                    """
+                    {"result":{"rateLimitsByLimitId":{
+                      "codex_bengalfox":{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark",
+                        "primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1700346807}}
+                    }}}
+                    """
+                )
+            }
+        },
+        TestCase(name: "hostile limit ids are skipped without harming the main pool") {
+            let overlongId = String(repeating: "a", count: 65)
+            let report = try parse(
+                """
+                {"result":{"rateLimitsByLimitId":{
+                  "codex":{"primary":{"usedPercent":32,"windowDurationMins":10080,"resetsAt":1700300000}},
+                  "model=equals":{"limitName":"Equals Model",
+                    "primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "model\\nnewline":{"limitName":"Newline Model",
+                    "primary":{"usedPercent":11,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "\(overlongId)":{"limitName":"Overlong Model",
+                    "primary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":1700346807}}
+                }}}
+                """
+            )
+            try expectEqual(report.weekly?.usedPercent, 32)
+            try expectEqual(report.models, [])
+        },
+        TestCase(name: "control characters in a limit name are sanitized and long names are capped") {
+            let overlongName = String(repeating: "n", count: 100)
+            let report = try parse(
+                """
+                {"result":{"rateLimitsByLimitId":{
+                  "codex":{"primary":{"usedPercent":32,"windowDurationMins":10080,"resetsAt":1700300000}},
+                  "codex_bengalfox":{"limitId":"codex_bengalfox","limitName":"GPT\\n5.3\\u0007Spark  Model",
+                    "primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "codex_lynx":{"limitId":"codex_lynx","limitName":"\(overlongName)",
+                    "primary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1700346807}}
+                }}}
+                """
+            )
+            try expectEqual(report.models.map(\.limitId), ["codex_bengalfox", "codex_lynx"])
+            try expectEqual(report.models.first?.displayName, "GPT 5.3Spark Model")
+            try expectEqual(
+                report.models.last?.displayName,
+                String(repeating: "n", count: 47) + "…"
+            )
+        },
+        TestCase(name: "duplicate limit ids drop every claimant") {
+            let report = try parse(
+                """
+                {"result":{"rateLimitsByLimitId":{
+                  "codex":{"primary":{"usedPercent":32,"windowDurationMins":10080,"resetsAt":1700300000}},
+                  "meter-1":{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark",
+                    "primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "meter-2":{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark-B",
+                    "primary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1700346807}}
+                }}}
+                """
+            )
+            try expectEqual(report.weekly?.usedPercent, 32)
+            try expectEqual(report.models, [])
+        },
+        TestCase(name: "at most four per-model rows surface, kept by sorted limit id") {
+            let report = try parse(
+                """
+                {"result":{"rateLimitsByLimitId":{
+                  "codex":{"primary":{"usedPercent":32,"windowDurationMins":10080,"resetsAt":1700300000}},
+                  "codex_f":{"limitId":"codex_f","limitName":"Model F",
+                    "primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "codex_b":{"limitId":"codex_b","limitName":"Model B",
+                    "primary":{"usedPercent":11,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "codex_d":{"limitId":"codex_d","limitName":"Model D",
+                    "primary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "codex_a":{"limitId":"codex_a","limitName":"Model A",
+                    "primary":{"usedPercent":13,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "codex_e":{"limitId":"codex_e","limitName":"Model E",
+                    "primary":{"usedPercent":14,"windowDurationMins":10080,"resetsAt":1700346807}},
+                  "codex_c":{"limitId":"codex_c","limitName":"Model C",
+                    "primary":{"usedPercent":15,"windowDurationMins":10080,"resetsAt":1700346807}}
+                }}}
+                """
+            )
+            try expectEqual(report.weekly?.usedPercent, 32)
+            try expectEqual(
+                report.models.map(\.limitId),
+                ["codex_a", "codex_b", "codex_c", "codex_d"]
+            )
+        },
+        TestCase(name: "an implausibly long per-model window is rejected") {
+            let report = try parse(
+                """
+                {"result":{"rateLimitsByLimitId":{
+                  "codex":{"primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1700300000}},
+                  "codex_x":{"limitId":"codex_x","limitName":"Model X",
+                    "primary":{"usedPercent":50,"windowDurationMins":200000000000000000,"resetsAt":9223372036854775807}}
+                }}}
+                """
+            )
+            try expectEqual(report.weekly?.usedPercent, 10)
+            try expectEqual(report.models, [])
         },
         TestCase(name: "server error is surfaced") {
             try expectThrows(CodexResponseParsingError.server("Sign in required")) {

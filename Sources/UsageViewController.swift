@@ -41,7 +41,15 @@ final class UsageViewController: NSViewController {
         return formatter
     }()
 
+    private struct ModelRow {
+        let limitId: String
+        let displayName: String
+        let divider: SectionDividerView
+        let bar: ComparisonBarView
+    }
+
     private var report: UsageReport?
+    private var modelRows: [ModelRow] = []
     private var rootHeightConstraint: NSLayoutConstraint?
 
     override func loadView() {
@@ -107,7 +115,8 @@ final class UsageViewController: NSViewController {
         self.report = report
         showUsagePresentation(
             fiveHourAvailable: report.fiveHour != nil,
-            weeklyAvailable: report.weekly != nil
+            weeklyAvailable: report.weekly != nil,
+            models: report.models
         )
         refreshButton.isEnabled = true
         setStatus(status.label, diagnostic: status.diagnostic)
@@ -158,6 +167,11 @@ final class UsageViewController: NSViewController {
             } else {
                 footerResetLabel.stringValue = ""
             }
+        }
+
+        for (row, model) in zip(modelRows, report.models) {
+            let reading = model.snapshot.reading(at: date)
+            row.bar.update(reading: reading, color: reading.pace.color)
         }
     }
 
@@ -244,11 +258,19 @@ final class UsageViewController: NSViewController {
         button.action = action
     }
 
-    private func showUsagePresentation(fiveHourAvailable: Bool, weeklyAvailable: Bool) {
+    private func showUsagePresentation(
+        fiveHourAvailable: Bool,
+        weeklyAvailable: Bool,
+        models: [ModelUsage]
+    ) {
         let showsBothWindows = fiveHourAvailable && weeklyAvailable
         footerResetLabel.isHidden = false
 
+        rebuildModelRowsIfNeeded(for: models)
+        let modelViews: [NSView] = modelRows.flatMap { [$0.divider, $0.bar] }
+
         replaceArrangedSubviews(in: contentStack, with: [])
+        let lastMainBar: ComparisonBarView
         if showsBothWindows {
             replaceArrangedSubviews(
                 in: fiveHourSection,
@@ -258,35 +280,68 @@ final class UsageViewController: NSViewController {
             fiveHourSection.setCustomSpacing(7, after: fiveHourResetRow)
             replaceArrangedSubviews(
                 in: contentStack,
-                with: [headerView, fiveHourSection, weeklyBar, footerView]
+                with: [headerView, fiveHourSection, weeklyBar] + modelViews + [footerView]
             )
             contentStack.setCustomSpacing(8, after: fiveHourSection)
-            contentStack.setCustomSpacing(3, after: weeklyBar)
+            lastMainBar = weeklyBar
         } else if fiveHourAvailable {
             replaceArrangedSubviews(in: fiveHourSection, with: [])
             replaceArrangedSubviews(
                 in: contentStack,
-                with: [headerView, fiveHourBar, footerView]
+                with: [headerView, fiveHourBar] + modelViews + [footerView]
             )
-            contentStack.setCustomSpacing(3, after: fiveHourBar)
+            lastMainBar = fiveHourBar
         } else {
             replaceArrangedSubviews(in: fiveHourSection, with: [])
             replaceArrangedSubviews(
                 in: contentStack,
-                with: [headerView, weeklyBar, footerView]
+                with: [headerView, weeklyBar] + modelViews + [footerView]
             )
-            contentStack.setCustomSpacing(3, after: weeklyBar)
+            lastMainBar = weeklyBar
+        }
+
+        // The tight footer gap follows the last bar; the reused main bar must not keep
+        // it when model rows are appended after a presentation that had none.
+        if let lastModelBar = modelRows.last?.bar {
+            contentStack.setCustomSpacing(7, after: lastMainBar)
+            contentStack.setCustomSpacing(3, after: lastModelBar)
+        } else {
+            contentStack.setCustomSpacing(3, after: lastMainBar)
         }
 
         let contentSize = AppConfiguration.contentSize(
             fiveHourAvailable: fiveHourAvailable,
-            weeklyAvailable: weeklyAvailable
+            weeklyAvailable: weeklyAvailable,
+            modelCount: models.count
         )
         setContentSize(contentSize)
     }
 
+    private func rebuildModelRowsIfNeeded(for models: [ModelUsage]) {
+        // A routine refresh reuses the existing rows so updateClock adjusts their readings
+        // in place, matching the five-hour and weekly bars.
+        let matchesExistingRows = modelRows.elementsEqual(models) { row, model in
+            row.limitId == model.limitId && row.displayName == model.displayName
+        }
+        guard !matchesExistingRows else { return }
+
+        modelRows = models.map { model in
+            ModelRow(
+                limitId: model.limitId,
+                displayName: model.displayName,
+                divider: SectionDividerView(),
+                bar: ComparisonBarView(
+                    timeLabel: model.snapshot.spansWeek ? "Week remaining" : "Time remaining",
+                    usageLabel: model.displayName,
+                    accessibilityLabel: "\(model.displayName) limit"
+                )
+            )
+        }
+    }
+
     private func showErrorPresentation() {
         footerResetLabel.isHidden = true
+        modelRows = []
         replaceArrangedSubviews(in: contentStack, with: [])
         replaceArrangedSubviews(in: fiveHourSection, with: [])
         replaceArrangedSubviews(

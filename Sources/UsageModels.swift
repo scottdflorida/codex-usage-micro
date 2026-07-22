@@ -3,16 +3,25 @@ import Foundation
 struct UsageReport: Equatable, Sendable {
     let weekly: UsageSnapshot?
     let fiveHour: UsageSnapshot?
+    let models: [ModelUsage]
 
-    init?(weekly: UsageSnapshot?, fiveHour: UsageSnapshot?) {
+    init?(weekly: UsageSnapshot?, fiveHour: UsageSnapshot?, models: [ModelUsage] = []) {
         guard weekly != nil || fiveHour != nil else { return nil }
         self.weekly = weekly
         self.fiveHour = fiveHour
+        self.models = models
     }
 
     func hasUnexpiredUsage(at date: Date = Date()) -> Bool {
-        [weekly, fiveHour].compactMap { $0 }.contains { $0.resetsAt > date }
+        ([weekly, fiveHour].compactMap { $0 } + models.map(\.snapshot))
+            .contains { $0.resetsAt > date }
     }
+}
+
+struct ModelUsage: Equatable, Sendable {
+    let limitId: String
+    let displayName: String
+    let snapshot: UsageSnapshot
 }
 
 struct UsageSnapshot: Equatable, Sendable {
@@ -25,6 +34,9 @@ struct UsageSnapshot: Equatable, Sendable {
             usedPercent.isFinite,
             (0...100).contains(usedPercent),
             windowDurationMinutes > 0,
+            // A year of headroom over any real limit window; also keeps resetsAt,
+            // which is validated against this duration, far from Int overflow.
+            windowDurationMinutes <= 366 * 24 * 60,
             resetsAt.timeIntervalSinceReferenceDate.isFinite
         else {
             return nil
@@ -41,6 +53,10 @@ struct UsageSnapshot: Equatable, Sendable {
 
     var usageRemainingPercent: Int {
         100 - Int(usedPercent.rounded())
+    }
+
+    var spansWeek: Bool {
+        windowDurationMinutes == 7 * 24 * 60
     }
 
     func timeRemainingFraction(at date: Date = Date()) -> Double {

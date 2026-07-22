@@ -38,6 +38,20 @@ enum MenuBarFreshness: Equatable, Sendable {
     case stale
 }
 
+enum UsageRowText {
+    static func toolTip(name: String, snapshot: UsageSnapshot, at date: Date) -> String {
+        let reading = snapshot.reading(at: date)
+        return "\(name) · Usage left \(reading.usageRemainingPercent)% · "
+            + "\(snapshot.spansWeek ? "Week" : "Time") left \(reading.timeRemainingPercent)%"
+    }
+
+    static func accessibility(name: String, snapshot: UsageSnapshot, at date: Date) -> String {
+        let reading = snapshot.reading(at: date)
+        return "\(name) usage remaining \(reading.usageRemainingPercent) percent, "
+            + "\(snapshot.spansWeek ? "week" : "time") remaining \(reading.timeRemainingPercent) percent"
+    }
+}
+
 struct MenuBarDisplayState: Equatable, Sendable {
     let brandName: String
     let gauge: MenuBarGaugeState
