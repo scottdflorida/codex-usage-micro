@@ -44,6 +44,7 @@ final class UsageViewController: NSViewController {
     private struct ModelRow {
         let limitId: String
         let displayName: String
+        let spansWeek: Bool
         let divider: SectionDividerView
         let bar: ComparisonBarView
     }
@@ -321,7 +322,9 @@ final class UsageViewController: NSViewController {
         // A routine refresh reuses the existing rows so updateClock adjusts their readings
         // in place, matching the five-hour and weekly bars.
         let matchesExistingRows = modelRows.elementsEqual(models) { row, model in
-            row.limitId == model.limitId && row.displayName == model.displayName
+            row.limitId == model.limitId
+                && row.displayName == model.displayName
+                && row.spansWeek == model.snapshot.spansWeek
         }
         guard !matchesExistingRows else { return }
 
@@ -329,6 +332,7 @@ final class UsageViewController: NSViewController {
             ModelRow(
                 limitId: model.limitId,
                 displayName: model.displayName,
+                spansWeek: model.snapshot.spansWeek,
                 divider: SectionDividerView(),
                 bar: ComparisonBarView(
                     timeLabel: model.snapshot.spansWeek ? "Week remaining" : "Time remaining",

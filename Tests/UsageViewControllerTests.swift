@@ -266,6 +266,51 @@ func usageViewControllerTests() -> [TestCase] {
                 )
             }
         },
+        TestCase(name: "model rows relabel when their window duration changes") {
+            try await MainActor.run {
+                _ = NSApplication.shared
+                let viewController = UsageViewController()
+
+                let weeklySpark = ModelUsage(
+                    limitId: "codex_bengalfox",
+                    displayName: "GPT-5.3-Codex-Spark",
+                    snapshot: snapshot(windowMinutes: 10_080)
+                )
+                let shortWindowSpark = ModelUsage(
+                    limitId: "codex_bengalfox",
+                    displayName: "GPT-5.3-Codex-Spark",
+                    snapshot: snapshot(windowMinutes: 300)
+                )
+
+                viewController.show(
+                    report: report(
+                        weekly: snapshot(windowMinutes: 10_080),
+                        fiveHour: nil,
+                        models: [weeklySpark]
+                    ),
+                    at: now
+                )
+                try expect(
+                    visibleText(in: viewController.view).contains("Week remaining"),
+                    "expected a weekly model window to use the weekly label"
+                )
+
+                viewController.show(
+                    report: report(
+                        weekly: snapshot(windowMinutes: 10_080),
+                        fiveHour: nil,
+                        models: [shortWindowSpark]
+                    ),
+                    at: now
+                )
+                let updatedText = visibleText(in: viewController.view)
+                try expect(
+                    updatedText.contains("Time remaining"),
+                    "expected a shorter model window to use the general time label"
+                )
+                try expectEqual(updatedText.filter { $0 == "Week remaining" }.count, 1)
+            }
+        },
         TestCase(name: "comparison bar tolerates a transient zero-width layout") {
             await MainActor.run {
                 _ = NSApplication.shared

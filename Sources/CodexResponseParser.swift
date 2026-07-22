@@ -79,11 +79,8 @@ enum CodexResponseParser {
     }
 
     private static func limitSources(from result: RateLimitsResult) -> [LimitSource] {
-        let namedSources = (result.rateLimitsByLimitId ?? [:])
+        let allNamedSources = (result.rateLimitsByLimitId ?? [:])
             .sorted { $0.key < $1.key }
-            .filter { identifier, snapshot in
-                !isPerModelBucket(identifier: identifier, snapshot: snapshot)
-            }
             .map { identifier, snapshot in
                 LimitSource(
                     priority: namedSourcePriority(identifier: identifier, snapshot: snapshot),
@@ -91,6 +88,13 @@ enum CodexResponseParser {
                     snapshot: snapshot
                 )
             }
+
+        let hasAuthoritativeMainSource =
+            result.rateLimits != nil
+            || allNamedSources.contains { $0.priority == .exactCodex }
+        let namedSources = allNamedSources.filter { source in
+            !hasAuthoritativeMainSource || !isPerModelBucket(source)
+        }
         let unknownSourceCount = namedSources.count { $0.priority == .unknown }
         var sources = namedSources.filter { $0.priority != .unknown || unknownSourceCount == 1 }
 
@@ -108,6 +112,16 @@ enum CodexResponseParser {
             )
         }
         return sources
+    }
+
+    // Once an exact or legacy account-wide source exists, a labeled non-exact bucket is
+    // model-specific and cannot fill a missing main window. Without an authoritative source,
+    // it remains eligible as a forward-compatible main bucket when it is unambiguous.
+    private static func isPerModelBucket(_ source: LimitSource) -> Bool {
+        guard let limitName = source.snapshot.limitName, !limitName.isEmpty else {
+            return false
+        }
+        return source.priority != .exactCodex
     }
 
     private static func namedSourcePriority(
@@ -264,15 +278,6 @@ enum CodexResponseParser {
                 .sorted { $0.limitId < $1.limitId }
                 .prefix(AppConfiguration.maximumModelRows)
         )
-    }
-
-    // A named bucket that is not the codex pool itself belongs to a single model; it must
-    // never stand in for the account-wide weekly or five-hour gauge.
-    private static func isPerModelBucket(identifier: String, snapshot: RateLimitSnapshot) -> Bool {
-        guard let limitName = snapshot.limitName, !limitName.isEmpty else {
-            return false
-        }
-        return !isExactCodexIdentifier(identifier) && !isExactCodexIdentifier(snapshot.limitId)
     }
 
     // A limit id becomes a model_<limitId> key in the line-oriented --snapshot contract;

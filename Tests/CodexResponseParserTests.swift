@@ -208,12 +208,14 @@ func codexResponseParserTests() -> [TestCase] {
         TestCase(name: "a single unfamiliar bucket is an unambiguous compatibility fallback") {
             let report = try parse(
                 """
-                {"result":{"rateLimitsByLimitId":{"next-generation-meter":{"primary":{
+                {"result":{"rateLimitsByLimitId":{"next-generation-meter":{
+                  "limitId":"future-main","limitName":"Next-generation usage","primary":{
                   "usedPercent":17,"windowDurationMins":10080,"resetsAt":1700002000
                 }}}}}
                 """
             )
             try expectEqual(report.weekly?.usedPercent, 17)
+            try expectEqual(report.models, [])
         },
         TestCase(name: "conflicting unfamiliar buckets fail closed") {
             try expectThrows(CodexResponseParsingError.missingUsableWindow) {
@@ -366,6 +368,24 @@ func codexResponseParserTests() -> [TestCase] {
                 Date(timeIntervalSince1970: 1_785_346_807)
             )
         },
+        TestCase(name: "a model window never fills a missing main-pool window") {
+            let report = try parse(
+                """
+                {"result":{"rateLimitsByLimitId":{
+                  "codex":{"primary":{
+                    "usedPercent":32,"windowDurationMins":10080,"resetsAt":1700300000
+                  }},
+                  "codex_bengalfox":{
+                    "limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark",
+                    "primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":1700009000}
+                  }
+                }}}
+                """
+            )
+            try expectEqual(report.weekly?.usedPercent, 32)
+            try expectEqual(report.fiveHour, nil)
+            try expectEqual(report.models.map(\.limitId), ["codex_bengalfox"])
+        },
         TestCase(name: "per-model buckets without a limit name are ignored") {
             let report = try parse(
                 """
@@ -418,13 +438,15 @@ func codexResponseParserTests() -> [TestCase] {
                 ["GPT-5.3-Codex-Spark", "GPT-5.3-Codex-Lynx"]
             )
         },
-        TestCase(name: "per-model buckets never substitute for the main pool") {
+        TestCase(name: "multiple per-model buckets never substitute for the main pool") {
             try expectThrows(CodexResponseParsingError.missingUsableWindow) {
                 _ = try parse(
                     """
                     {"result":{"rateLimitsByLimitId":{
                       "codex_bengalfox":{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark",
-                        "primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1700346807}}
+                        "primary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1700346807}},
+                      "codex_lynx":{"limitId":"codex_lynx","limitName":"GPT-5.3-Codex-Lynx",
+                        "primary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1700346807}}
                     }}}
                     """
                 )
