@@ -1,21 +1,18 @@
 # Codex Usage Micro
 
 ## A tiny macOS menu-bar meter for Codex usage.
-
 - No API key or separate login required
 - No third-party dependencies
 - I have a job watching Codex release notes so I can update when OpenAI changes how usage data is exposed
 
 ***Get the companion meters for [Cursor/Grok](https://github.com/scottdflorida/cursor-usage-micro) and
 [Claude](https://github.com/scottdflorida/claude-usage-micro)!*** *(So you can always see which services still have
-usage remaining.)*
+usage remaining.)*  
+<img width="470" height="37" alt="image" src="https://github.com/user-attachments/assets/99cdc56b-7ca3-4a0d-8a10-9dd10f2d9f45" /> 
 
-<!-- Add the companion meters screenshot here. -->
-
-The purpose is to show you **how your usage is draining compared to the time left in each limit window**.
-The vertical marker inside the meter moves from right to left as the window progresses. The fill drains as usage
-is consumed.
-
+The purpose is to show you **how your usage is draining compared to the time left in each limit window**.  
+The vertical marker inside the meter moves from right to left as the window progresses.  
+The fill drains as usage is consumed.
 - Green when remaining usage exceeds remaining time
 - Amber when remaining usage is less than remaining time
 - Red when remaining usage is less than 15%
@@ -23,17 +20,14 @@ is consumed.
 The menu-bar gauge follows weekly usage when available and falls back to the five-hour limit when it is the only
 readable window. The five-hour limit appears only when Codex reports it for the current account.
 
-In the menu bar: meter at a glance
+In the menu bar: meter at a glance  
+<img width="68" height="36" alt="image" src="https://github.com/user-attachments/assets/d0a23a3f-1915-4c5f-98fc-8137a1c3988a" />
 
-<!-- Add the menu-bar screenshot here. -->
+On hover: the data that matters  
+<img width="275" height="66" alt="image" src="https://github.com/user-attachments/assets/a469b206-3372-43f7-9e7b-0a4199eb5579" />
 
-On hover: the data that matters
-
-<!-- Add the tooltip screenshot here. -->
-
-On click: the full view
-
-<!-- Add the popover screenshot here. -->
+On click: the full view  
+<img width="365" height="212" alt="image" src="https://github.com/user-attachments/assets/e0585574-7b6d-4eb4-a7c4-567db690fc27" />
 
 ## Requirements
 
