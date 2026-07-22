@@ -1,5 +1,7 @@
 # Codex Usage Micro
 
+[![CI](https://github.com/scottdflorida/codex-usage-micro/actions/workflows/ci.yml/badge.svg)](https://github.com/scottdflorida/codex-usage-micro/actions/workflows/ci.yml)
+
 ## A tiny macOS menu-bar meter for Codex usage.
 - No API key or separate login required
 - No third-party dependencies
