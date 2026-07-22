@@ -3,7 +3,10 @@ set -euo pipefail
 
 project_dir=${0:A:h}
 module_cache="$project_dir/build/StrictModuleCache"
+target="$(uname -m)-apple-macosx13.0"
 source_files=("$project_dir"/Sources/*.swift)
+# Every source except the app entry point: its @main collides with the test runner's.
+test_sources=(${source_files:#*/CodexUsageMicro.swift})
 test_files=("$project_dir"/Tests/*.swift)
 test_binary="$project_dir/build/CodexUsageMicroTests"
 
@@ -21,7 +24,7 @@ swiftc \
   -swift-version 6 \
   -strict-concurrency=complete \
   -warnings-as-errors \
-  -target arm64-apple-macosx13.0 \
+  -target "$target" \
   -module-cache-path "$module_cache" \
   -framework AppKit \
   -framework Foundation \
@@ -32,16 +35,11 @@ swiftc \
   -swift-version 6 \
   -strict-concurrency=complete \
   -warnings-as-errors \
+  -target "$target" \
   -module-cache-path "$module_cache" \
   -framework AppKit \
   -framework Foundation \
-  "$project_dir/Sources/AppConfiguration.swift" \
-  "$project_dir/Sources/RefreshConfiguration.swift" \
-  "$project_dir/Sources/UsageModels.swift" \
-  "$project_dir/Sources/CodexResponseParser.swift" \
-  "$project_dir/Sources/DiagnosticText.swift" \
-  "$project_dir/Sources/JSONLineBuffer.swift" \
-  "$project_dir/Sources/CodexClient.swift" \
+  "${test_sources[@]}" \
   "${test_files[@]}" \
   -o "$test_binary"
 

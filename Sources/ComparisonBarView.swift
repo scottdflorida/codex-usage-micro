@@ -9,29 +9,46 @@ final class ComparisonBarView: NSView {
         static let markerWidth: CGFloat = 3
     }
 
-    private let weekName = NSTextField(labelWithString: "Week remaining")
-    private let weekValue = NSTextField(labelWithString: "—")
-    private let usageName = NSTextField(labelWithString: "Usage remaining")
+    private enum NamePlacement {
+        case beforeValue
+        case afterValue
+
+        func updated(for fraction: Double) -> Self {
+            switch (self, fraction) {
+            case (.afterValue, 0.54...): .beforeValue
+            case (.beforeValue, ...0.46): .afterValue
+            default: self
+            }
+        }
+    }
+
+    private let timeName: NSTextField
+    private let timeValue = NSTextField(labelWithString: "—")
+    private let usageName: NSTextField
     private let usageValue = NSTextField(labelWithString: "—")
 
-    private var weekFraction = 0.0
+    private var timeFraction = 0.0
     private var usageFraction = 0.0
     private var usageColor = NSColor.systemGray
     private var trackRect = NSRect.zero
     private var showsReading = false
+    private var timeNamePlacement = NamePlacement.afterValue
+    private var usageNamePlacement = NamePlacement.afterValue
 
-    init() {
+    init(timeLabel: String, usageLabel: String, accessibilityLabel: String) {
+        timeName = NSTextField(labelWithString: timeLabel)
+        usageName = NSTextField(labelWithString: usageLabel)
         super.init(frame: .zero)
         translatesAutoresizingMaskIntoConstraints = false
 
-        weekName.font = .systemFont(ofSize: 12, weight: .medium)
+        timeName.font = .systemFont(ofSize: 12, weight: .medium)
         usageName.font = .systemFont(ofSize: 12, weight: .bold)
-        [weekName, usageName].forEach { label in
+        for label in [timeName, usageName] {
             label.textColor = .secondaryLabelColor
             addSubview(label)
         }
 
-        [weekValue, usageValue].forEach { label in
+        for label in [timeValue, usageValue] {
             label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
             label.alignment = .center
             addSubview(label)
@@ -39,10 +56,10 @@ final class ComparisonBarView: NSView {
 
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
-        setAccessibilityLabel("Weekly usage comparison")
+        setAccessibilityLabel(accessibilityLabel)
         setAccessibilityHelp("The colored bar shows usage remaining; the marker shows time remaining.")
-        [weekName, weekValue, usageName, usageValue].forEach {
-            $0.setAccessibilityElement(false)
+        for label in [timeName, timeValue, usageName, usageValue] {
+            label.setAccessibilityElement(false)
         }
     }
 
@@ -65,16 +82,18 @@ final class ComparisonBarView: NSView {
             height: Layout.trackHeight
         )
 
-        layoutRow(
+        usageNamePlacement = layoutRow(
             name: usageName,
             value: usageValue,
             fraction: usageFraction,
+            namePlacement: usageNamePlacement,
             y: bounds.maxY - Layout.rowHeight
         )
-        layoutRow(
-            name: weekName,
-            value: weekValue,
-            fraction: weekFraction,
+        timeNamePlacement = layoutRow(
+            name: timeName,
+            value: timeValue,
+            fraction: timeFraction,
+            namePlacement: timeNamePlacement,
             y: bounds.minY
         )
     }
@@ -105,13 +124,13 @@ final class ComparisonBarView: NSView {
         ).fill()
         NSGraphicsContext.restoreGraphicsState()
 
-        let rawMarkerX = trackRect.minX + trackRect.width * weekFraction
+        let rawMarkerX = trackRect.minX + trackRect.width * timeFraction
         let markerX = max(
             trackRect.minX,
             min(trackRect.maxX - Layout.markerWidth, rawMarkerX - Layout.markerWidth / 2)
         )
 
-        NSColor.white.withAlphaComponent(0.95).setFill()
+        NSColor.controlBackgroundColor.withAlphaComponent(0.98).setFill()
         NSBezierPath(
             roundedRect: NSRect(
                 x: markerX,
@@ -124,16 +143,21 @@ final class ComparisonBarView: NSView {
         ).fill()
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     func update(reading: UsageReading, color: NSColor) {
         showsReading = true
-        weekFraction = reading.weekRemainingFraction.clamped(to: 0...1)
+        timeFraction = reading.timeRemainingFraction.clamped(to: 0...1)
         usageFraction = reading.usageRemainingFraction.clamped(to: 0...1)
         usageColor = color
-        weekValue.stringValue = "\(reading.weekRemainingPercent)%"
+        timeValue.stringValue = "\(reading.timeRemainingPercent)%"
         usageValue.stringValue = "\(reading.usageRemainingPercent)%"
         setAccessibilityValue(
-            "Week remaining \(reading.weekRemainingPercent) percent, "
-                + "usage remaining \(reading.usageRemainingPercent) percent"
+            "Usage remaining \(reading.usageRemainingPercent) percent; "
+                + "time remaining \(reading.timeRemainingPercent) percent"
         )
         needsLayout = true
         needsDisplay = true
@@ -141,10 +165,10 @@ final class ComparisonBarView: NSView {
 
     func showUnavailable() {
         showsReading = false
-        weekFraction = 0
+        timeFraction = 0
         usageFraction = 0
         usageColor = .systemGray
-        weekValue.stringValue = "—"
+        timeValue.stringValue = "—"
         usageValue.stringValue = "—"
         setAccessibilityValue("Usage unavailable")
         needsLayout = true
@@ -155,29 +179,39 @@ final class ComparisonBarView: NSView {
         name: NSTextField,
         value: NSTextField,
         fraction: Double,
+        namePlacement: NamePlacement,
         y: CGFloat
-    ) {
+    ) -> NamePlacement {
         name.sizeToFit()
         value.sizeToFit()
 
         let valueWidth = value.frame.width
         let markerCenter = bounds.minX + bounds.width * fraction
-        let valueX = max(
-            bounds.minX,
-            min(bounds.maxX - valueWidth, markerCenter - valueWidth / 2)
-        )
-        value.frame = NSRect(x: valueX, y: y, width: valueWidth, height: Layout.rowHeight)
-
+        let preferredValueX = markerCenter - valueWidth / 2
         let nameWidth = name.frame.width
+        let labelAndValueWidth = nameWidth + Layout.labelGap + valueWidth
+        guard bounds.width >= labelAndValueWidth else { return namePlacement }
+
+        let resolvedPlacement = namePlacement.updated(for: fraction)
+
+        let valueX: CGFloat
         let nameX: CGFloat
-        if fraction > 0.5 {
+        if resolvedPlacement == .beforeValue {
+            let minimumValueX = bounds.minX + nameWidth + Layout.labelGap
+            let maximumValueX = bounds.maxX - valueWidth
+            valueX = preferredValueX.clamped(to: minimumValueX...maximumValueX)
+            nameX = valueX - Layout.labelGap - nameWidth
             name.alignment = .right
-            nameX = max(bounds.minX, value.frame.minX - Layout.labelGap - nameWidth)
         } else {
+            let maximumValueX = bounds.maxX - labelAndValueWidth
+            valueX = preferredValueX.clamped(to: bounds.minX...maximumValueX)
+            nameX = valueX + valueWidth + Layout.labelGap
             name.alignment = .left
-            nameX = min(bounds.maxX - nameWidth, value.frame.maxX + Layout.labelGap)
         }
+
+        value.frame = NSRect(x: valueX, y: y, width: valueWidth, height: Layout.rowHeight)
         name.frame = NSRect(x: nameX, y: y, width: nameWidth, height: Layout.rowHeight)
+        return resolvedPlacement
     }
 
     private var trackColor: NSColor {
@@ -185,11 +219,5 @@ final class ComparisonBarView: NSView {
         return isDark
             ? NSColor.white.withAlphaComponent(0.24)
             : NSColor.black.withAlphaComponent(0.14)
-    }
-}
-
-private extension Comparable {
-    func clamped(to range: ClosedRange<Self>) -> Self {
-        min(max(self, range.lowerBound), range.upperBound)
     }
 }

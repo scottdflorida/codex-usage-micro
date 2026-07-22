@@ -8,14 +8,22 @@ enum DiagnosticText {
             message
             .split(whereSeparator: \Character.isWhitespace)
             .joined(separator: " ")
+        let scalars = flattened.unicodeScalars.filter {
+            !(0x00...0x1F).contains($0.value) && !(0x7F...0x9F).contains($0.value)
+        }
+        let redacted = String(String.UnicodeScalarView(scalars))
+            .replacingOccurrences(
+                of: FileManager.default.homeDirectoryForCurrentUser.path,
+                with: "~"
+            )
 
-        guard !flattened.isEmpty else {
+        guard !redacted.isEmpty else {
             return "Codex returned an error"
         }
-        guard flattened.count > maximumLength else {
-            return flattened
+        guard redacted.count > maximumLength else {
+            return redacted
         }
 
-        return flattened.prefix(maximumLength - 1) + "…"
+        return redacted.prefix(maximumLength - 1) + "…"
     }
 }

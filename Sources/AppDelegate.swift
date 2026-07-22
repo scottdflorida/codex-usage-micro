@@ -2,18 +2,25 @@ import AppKit
 import Foundation
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let client: any UsageFetching
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    private let client: CodexClient
+    private let refreshThrottle = RefreshThrottle(
+        maximumAge: AppConfiguration.automaticRefreshInterval
+    )
     private let viewController = UsageViewController()
     private let popover = NSPopover()
 
+    private var menuBarDisplayState = MenuBarDisplayState.loading
     private var statusItem: NSStatusItem?
     private var report: UsageReport?
+    private var staleDiagnostic: String?
+    private var lastSuccessfulRefreshAt: Date?
     private var refreshTask: Task<Void, Never>?
     private var usageTimer: Timer?
     private var clockTimer: Timer?
+    private var localClickMonitor: Any?
 
-    init(client: any UsageFetching = CodexClient()) {
+    init(client: CodexClient = CodexClient()) {
         self.client = client
         super.init()
     }
@@ -30,44 +37,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshTask?.cancel()
         usageTimer?.invalidate()
         clockTimer?.invalidate()
+        stopLocalClickMonitor()
     }
 
     private func configurePopover() {
         popover.behavior = .transient
-        popover.contentSize = AppConfiguration.contentSize
+        popover.delegate = self
+        popover.contentSize = AppConfiguration.compactContentSize
         popover.contentViewController = viewController
         viewController.onRefresh = { [weak self] in self?.refresh() }
+        viewController.onContentSizeChange = { [weak self] size in
+            self?.popover.contentSize = size
+        }
     }
 
     private func configureStatusItem() {
-        let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let statusItem = NSStatusBar.system.statusItem(
+            withLength: MenuBarGaugeRenderer.statusItemLength
+        )
         self.statusItem = statusItem
+        // Keep visibility owned by this process. An autosave name lets macOS persist an
+        // externally hidden status item across launches, even while the app is healthy.
+        statusItem.isVisible = true
         guard let button = statusItem.button else { return }
 
-        button.title = "\(AppConfiguration.menuTitlePrefix) —"
-        button.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        button.title = ""
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleNone
         button.target = self
         button.action = #selector(togglePopover)
-        button.toolTip = "Codex weekly usage"
-        button.setAccessibilityLabel("Codex weekly usage")
+        button.toolTip = "Codex usage"
+        button.setAccessibilityLabel("Codex usage")
         button.setAccessibilityValue("Usage unavailable")
+        button.setAccessibilityHelp("Opens available Codex usage-limit details.")
+        renderStatusItem()
     }
 
     private func scheduleTimers() {
-        usageTimer = Timer.scheduledTimer(
-            timeInterval: AppConfiguration.automaticRefreshInterval,
-            target: self,
-            selector: #selector(automaticRefreshTimerFired),
-            userInfo: nil,
-            repeats: true
-        )
-        clockTimer = Timer.scheduledTimer(
-            timeInterval: AppConfiguration.clockRefreshInterval,
-            target: self,
-            selector: #selector(clockTimerFired),
-            userInfo: nil,
-            repeats: true
-        )
+        usageTimer = scheduledTimer(
+            interval: AppConfiguration.automaticRefreshInterval,
+            tolerance: AppConfiguration.automaticRefreshInterval / 10
+        ) { [weak self] in self?.refresh() }
+        clockTimer = scheduledTimer(
+            interval: AppConfiguration.clockRefreshInterval,
+            tolerance: 5
+        ) { [weak self] in self?.tick() }
+    }
+
+    private func scheduledTimer(
+        interval: TimeInterval,
+        tolerance: TimeInterval,
+        _ body: @escaping @MainActor () -> Void
+    ) -> Timer {
+        let timer = Timer(timeInterval: interval, repeats: true) { _ in
+            MainActor.assumeIsolated(body)
+        }
+        timer.tolerance = tolerance
+        RunLoop.main.add(timer, forMode: .common)
+        return timer
     }
 
     @objc private func togglePopover() {
@@ -77,60 +104,164 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.performClose(nil)
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            refresh()
+            startLocalClickMonitor()
+            if refreshThrottle.shouldRefresh(lastSuccessfulRefreshAt: lastSuccessfulRefreshAt) {
+                refresh()
+            }
         }
     }
 
-    @objc private func automaticRefreshTimerFired() {
-        refresh()
-    }
-
-    @objc private func clockTimerFired() {
-        tick()
+    func popoverDidClose(_ notification: Notification) {
+        stopLocalClickMonitor()
     }
 
     private func refresh() {
         guard refreshTask == nil else { return }
 
         viewController.showLoading()
+        if report == nil {
+            menuBarDisplayState = .loading
+            renderStatusItem()
+            statusItem?.button?.toolTip = "Checking Codex usage"
+            statusItem?.button?.setAccessibilityValue("Checking usage")
+        }
         refreshTask = Task { [weak self, client] in
             do {
                 let report = try await client.fetch()
                 guard let self else { return }
+                let now = Date()
                 self.report = report
-                self.viewController.show(report: report)
-                self.updateStatusItem(with: report)
+                self.staleDiagnostic = nil
+                self.lastSuccessfulRefreshAt = now
+                self.viewController.show(report: report, at: now)
+                self.updateStatusItem(with: report, at: now)
             } catch is CancellationError {
                 // Application shutdown owns cancellation; no error state should flash on exit.
             } catch {
                 guard let self else { return }
+                self.lastSuccessfulRefreshAt = nil
                 let diagnostic = DiagnosticText.sanitized(error.localizedDescription)
-                self.report = nil
-                self.viewController.show(errorMessage: diagnostic)
-                self.statusItem?.button?.title = "\(AppConfiguration.menuTitlePrefix) !"
-                self.statusItem?.button?.toolTip = diagnostic
-                self.statusItem?.button?.setAccessibilityValue("Usage unavailable")
+                if let report = self.report,
+                    RefreshFailurePolicy.preservesLastReport(for: error, report: report)
+                {
+                    self.staleDiagnostic = diagnostic
+                    self.viewController.show(report: report, status: .stale(diagnostic))
+                    self.updateStatusItem(with: report, diagnostic: diagnostic)
+                } else {
+                    self.showUnavailable(diagnostic: diagnostic)
+                }
             }
             self?.refreshTask = nil
         }
     }
 
     private func tick(at date: Date = Date()) {
+        if let report, let staleDiagnostic, !report.hasUnexpiredUsage(at: date) {
+            showUnavailable(diagnostic: staleDiagnostic)
+            return
+        }
+
         viewController.updateClock(at: date)
         if let report {
-            updateStatusItem(with: report, at: date)
+            updateStatusItem(with: report, at: date, diagnostic: staleDiagnostic)
         }
     }
 
-    private func updateStatusItem(with report: UsageReport, at date: Date = Date()) {
-        let reading = report.snapshot.reading(at: date)
-        statusItem?.button?.title = "\(AppConfiguration.menuTitlePrefix) \(reading.usageRemainingPercent)%"
-        statusItem?.button?.toolTip =
-            "Usage remaining: \(reading.usageRemainingPercent)% · "
-            + "Week remaining: \(reading.weekRemainingPercent)%"
-        statusItem?.button?.setAccessibilityValue(
-            "Usage remaining \(reading.usageRemainingPercent) percent, "
-                + "week remaining \(reading.weekRemainingPercent) percent"
+    private func updateStatusItem(
+        with report: UsageReport,
+        at date: Date = Date(),
+        diagnostic: String? = nil
+    ) {
+        menuBarDisplayState = .live(
+            report: report,
+            at: date,
+            freshness: diagnostic == nil ? .current : .stale
         )
+        renderStatusItem()
+
+        var toolTipLines: [String] = []
+        var accessibilityDetails: [String] = []
+        if let fiveHour = report.fiveHour {
+            let reading = fiveHour.reading(at: date)
+            toolTipLines.append(
+                "5-hour · Usage left \(reading.usageRemainingPercent)% · "
+                    + "Time left \(reading.timeRemainingPercent)%"
+            )
+            accessibilityDetails.append(
+                "five-hour usage remaining \(reading.usageRemainingPercent) percent, "
+                    + "time remaining \(reading.timeRemainingPercent) percent"
+            )
+        }
+
+        if let weekly = report.weekly {
+            let reading = weekly.reading(at: date)
+            toolTipLines.append(
+                "Weekly · Usage left \(reading.usageRemainingPercent)% · "
+                    + "Week left \(reading.timeRemainingPercent)%"
+            )
+            accessibilityDetails.append(
+                "weekly usage remaining \(reading.usageRemainingPercent) percent, "
+                    + "week remaining \(reading.timeRemainingPercent) percent"
+            )
+        }
+
+        if let diagnostic {
+            toolTipLines.insert("Last update shown · \(diagnostic)", at: 0)
+        }
+
+        statusItem?.button?.toolTip = toolTipLines.joined(separator: "\n")
+        let accessibilityPrefix = diagnostic.map { "Last update shown. \($0). " } ?? ""
+        if case .value(let reading) = menuBarDisplayState.gauge,
+            let limitName = menuBarDisplayState.limitName
+        {
+            statusItem?.button?.setAccessibilityValue(
+                accessibilityPrefix
+                    + "\(limitName) usage remaining \(reading.usageRemainingPercent) percent, "
+                    + "time remaining \(reading.timeRemainingPercent) percent"
+            )
+        } else {
+            statusItem?.button?.setAccessibilityValue(
+                accessibilityPrefix + accessibilityDetails.joined(separator: "; ")
+            )
+        }
+    }
+
+    private func showUnavailable(diagnostic: String) {
+        report = nil
+        staleDiagnostic = nil
+        viewController.show(errorMessage: diagnostic)
+        menuBarDisplayState = .unavailable
+        renderStatusItem()
+        statusItem?.button?.toolTip = diagnostic
+        statusItem?.button?.setAccessibilityValue("Usage unavailable")
+    }
+
+    private func renderStatusItem() {
+        guard let button = statusItem?.button else { return }
+
+        button.image = MenuBarGaugeRenderer.image(for: menuBarDisplayState)
+        statusItem?.isVisible = true
+    }
+
+    private func startLocalClickMonitor() {
+        guard localClickMonitor == nil else { return }
+        let mask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            guard let self else { return event }
+            let popoverWindow = self.popover.contentViewController?.view.window
+            let statusWindow = self.statusItem?.button?.window
+            if event.window !== popoverWindow && event.window !== statusWindow {
+                self.popover.performClose(nil)
+            }
+            return event
+        }
+    }
+
+    private func stopLocalClickMonitor() {
+        if let localClickMonitor {
+            NSEvent.removeMonitor(localClickMonitor)
+            self.localClickMonitor = nil
+        }
     }
 }

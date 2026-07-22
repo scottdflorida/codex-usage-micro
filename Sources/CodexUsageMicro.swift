@@ -4,31 +4,72 @@ import Foundation
 
 @main
 enum CodexUsageMicro {
-    static func main() async {
+    @MainActor private static var appDelegate: AppDelegate?
+
+    @MainActor
+    static func main() {
+        // A write to a dead codex process must fail as EPIPE; the default
+        // SIGPIPE disposition would kill the app before any catch runs.
+        signal(SIGPIPE, SIG_IGN)
+
         if CommandLine.arguments.contains("--snapshot") {
-            await printSnapshot()
+            printSnapshot()
             return
         }
 
-        await MainActor.run {
-            let application = NSApplication.shared
-            let delegate = AppDelegate()
-            application.delegate = delegate
-            application.run()
-            withExtendedLifetime(delegate) {}
-        }
+        let application = NSApplication.shared
+        let delegate = AppDelegate()
+        appDelegate = delegate
+        application.delegate = delegate
+        application.run()
     }
 
-    private static func printSnapshot() async {
-        do {
-            let report = try await CodexClient().fetch()
-            let reading = report.snapshot.reading()
-            print("limit_0_time_remaining=\(reading.weekRemainingPercent)")
-            print("limit_0_usage_remaining=\(reading.usageRemainingPercent)")
-            print("limit_0_resets_at=\(Int(report.snapshot.resetsAt.timeIntervalSince1970))")
-        } catch {
-            fputs("\(error.localizedDescription)\n", stderr)
+    private nonisolated static func printSnapshot() {
+        let resultBox = SnapshotResultBox()
+        let completed = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            do {
+                resultBox.store(.success(try await CodexClient().fetch()))
+            } catch {
+                resultBox.store(.failure(error.localizedDescription))
+            }
+            completed.signal()
+        }
+        completed.wait()
+
+        switch resultBox.load() {
+        case .success(let report):
+            for line in SnapshotOutput.lines(for: report) {
+                print(line)
+            }
+        case .failure(let diagnostic):
+            fputs("\(diagnostic)\n", stderr)
             exit(EXIT_FAILURE)
         }
+    }
+}
+
+private enum SnapshotResult: Sendable {
+    case success(UsageReport)
+    case failure(String)
+}
+
+private final class SnapshotResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: SnapshotResult?
+
+    func store(_ result: SnapshotResult) {
+        lock.lock()
+        self.result = result
+        lock.unlock()
+    }
+
+    func load() -> SnapshotResult {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let result else {
+            preconditionFailure("Snapshot result was read before completion")
+        }
+        return result
     }
 }

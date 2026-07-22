@@ -1,11 +1,7 @@
 import Darwin
 import Foundation
 
-protocol UsageFetching: Sendable {
-    func fetch() async throws -> UsageReport
-}
-
-struct CodexClient: UsageFetching {
+struct CodexClient: Sendable {
     private let executableLocator: CodexExecutableLocator
     private let timeout: Duration
 
@@ -63,31 +59,50 @@ enum CodexClientError: LocalizedError, Equatable {
 }
 
 struct CodexExecutableLocator: Sendable {
-    private static let knownLocations = [
+    private static let defaultLocations = [
         "/Applications/ChatGPT.app/Contents/Resources/codex",
         "/opt/homebrew/bin/codex",
         "/usr/local/bin/codex",
     ]
 
     private let environmentPath: String?
+    private let knownLocations: [String]
 
-    init(environmentPath: String? = ProcessInfo.processInfo.environment["PATH"]) {
+    init(
+        environmentPath: String? = ProcessInfo.processInfo.environment["PATH"],
+        knownLocations: [String] = Self.defaultLocations
+    ) {
         self.environmentPath = environmentPath
+        self.knownLocations = knownLocations
     }
 
     func locate() -> URL? {
-        let searchPaths = Self.knownLocations + pathCandidates
-        return searchPaths.lazy
-            .filter(FileManager.default.isExecutableFile(atPath:))
-            .map(URL.init(fileURLWithPath:))
-            .first
+        var visitedPaths: Set<String> = []
+        for path in knownLocations + pathCandidates {
+            guard path.hasPrefix("/") else { continue }
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            guard visitedPaths.insert(url.path).inserted else { continue }
+
+            var isDirectory = ObjCBool(false)
+            guard
+                FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                !isDirectory.boolValue,
+                FileManager.default.isExecutableFile(atPath: url.path)
+            else {
+                continue
+            }
+            return url
+        }
+        return nil
     }
 
     private var pathCandidates: [String] {
         environmentPath?
             .split(separator: ":", omittingEmptySubsequences: true)
-            .map { directory in
-                URL(fileURLWithPath: String(directory), isDirectory: true)
+            .compactMap { directory -> String? in
+                let path = String(directory)
+                guard path.hasPrefix("/") else { return nil }
+                return URL(fileURLWithPath: path, isDirectory: true)
                     .appendingPathComponent("codex", isDirectory: false)
                     .path
             } ?? []
@@ -115,8 +130,6 @@ actor CodexRPCSession {
     private var phase = Phase.idle
     private var process: Process?
     private var standardInput: FileHandle?
-    private var standardOutput: FileHandle?
-    private var standardError: FileHandle?
     private var outputBuffer = JSONLineBuffer(maximumBufferedBytes: 1_048_576)
     private var errorBuffer = Data()
     private var continuation: CheckedContinuation<Data, Error>?
@@ -124,6 +137,8 @@ actor CodexRPCSession {
     private var forceTerminationTask: Task<Void, Never>?
     private var processExitStatus: Int32?
     private var reachedOutputEOF = false
+    private var reachedErrorEOF = false
+    private var wasCancelledBeforeStart = false
 
     init(executableURL: URL, timeout: Duration) {
         self.executableURL = executableURL
@@ -144,7 +159,11 @@ actor CodexRPCSession {
 
     private func start(continuation: CheckedContinuation<Data, Error>) {
         guard phase == .idle else {
-            continuation.resume(throwing: CodexClientError.invalidResponse)
+            if wasCancelledBeforeStart {
+                continuation.resume(throwing: CancellationError())
+            } else {
+                continuation.resume(throwing: CodexClientError.invalidResponse)
+            }
             return
         }
 
@@ -163,22 +182,11 @@ actor CodexRPCSession {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        outputHandle.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard let self else { return }
-
-            // FileHandle delivers stdout serially. Waiting on this private I/O callback keeps
-            // actor delivery in the same order, including the final data chunk and EOF.
-            let delivered = DispatchSemaphore(value: 0)
-            Task {
-                await self.receiveOutput(data)
-                delivered.signal()
-            }
-            delivered.wait()
+        startReading(outputHandle) { [weak self] data in
+            await self?.receiveOutput(data)
         }
-        errorHandle.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            Task { await self?.receiveError(data) }
+        startReading(errorHandle) { [weak self] data in
+            await self?.receiveError(data)
         }
         process.terminationHandler = { [weak self] process in
             let status = process.terminationStatus
@@ -187,8 +195,6 @@ actor CodexRPCSession {
 
         self.process = process
         standardInput = inputPipe.fileHandleForWriting
-        standardOutput = outputHandle
-        standardError = errorHandle
         phase = .initializing
 
         do {
@@ -226,7 +232,13 @@ actor CodexRPCSession {
     }
 
     private func receiveError(_ data: Data) {
-        guard phase != .finished, !data.isEmpty, errorBuffer.count < Self.maximumErrorBytes else {
+        guard phase != .finished else { return }
+        guard !data.isEmpty else {
+            reachedErrorEOF = true
+            finishAfterProcessExitIfReady()
+            return
+        }
+        guard errorBuffer.count < Self.maximumErrorBytes else {
             return
         }
 
@@ -239,13 +251,19 @@ actor CodexRPCSession {
             return
         }
 
+        // Server-initiated requests use an independent id namespace; only a
+        // message without a method key can be the response to ours.
+        guard !header.isRequestOrNotification, header.id == expectedRequestID else {
+            return
+        }
+
         if let message = header.error?.message {
             finish(with: .failure(CodexClientError.server(DiagnosticText.sanitized(message))))
             return
         }
 
-        switch (phase, header.id) {
-        case (.initializing, RequestID.initialize):
+        switch phase {
+        case .initializing:
             do {
                 try sendInitializedNotification()
                 try sendRateLimitsRequest()
@@ -254,11 +272,19 @@ actor CodexRPCSession {
                 finish(with: .failure(CodexClientError.connectionClosed(error.localizedDescription)))
             }
 
-        case (.readingRateLimits, RequestID.rateLimits):
+        case .readingRateLimits:
             finish(with: .success(data))
 
-        default:
+        case .idle, .finished:
             break
+        }
+    }
+
+    private var expectedRequestID: Int? {
+        switch phase {
+        case .initializing: RequestID.initialize
+        case .readingRateLimits: RequestID.rateLimits
+        case .idle, .finished: nil
         }
     }
 
@@ -273,7 +299,7 @@ actor CodexRPCSession {
     }
 
     private func finishAfterProcessExitIfReady() {
-        guard reachedOutputEOF, let processExitStatus else { return }
+        guard reachedOutputEOF, reachedErrorEOF, let processExitStatus else { return }
 
         let detail = stderrDescription
         let fallback = processExitStatus == 0 ? nil : "exit status \(processExitStatus)"
@@ -298,6 +324,9 @@ actor CodexRPCSession {
 
     private func cancel() {
         guard phase != .finished else { return }
+        if continuation == nil {
+            wasCancelledBeforeStart = true
+        }
         finish(with: .failure(CancellationError()))
     }
 
@@ -307,8 +336,6 @@ actor CodexRPCSession {
 
         timeoutTask?.cancel()
         timeoutTask = nil
-        standardOutput?.readabilityHandler = nil
-        standardError?.readabilityHandler = nil
         try? standardInput?.close()
 
         if process?.isRunning == true {
@@ -318,12 +345,36 @@ actor CodexRPCSession {
             releaseProcess()
         }
         standardInput = nil
-        standardOutput = nil
-        standardError = nil
 
         let continuation = self.continuation
         self.continuation = nil
         continuation?.resume(with: result)
+    }
+
+    private nonisolated func startReading(
+        _ handle: FileHandle,
+        deliver: @escaping @Sendable (Data) async -> Void
+    ) {
+        // The task owns the handle for the life of the loop, so the descriptor
+        // cannot be closed and recycled underneath a blocked read.
+        Task.detached(priority: .utility) {
+            let descriptor = handle.fileDescriptor
+            while true {
+                var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+                let bytesRead = buffer.withUnsafeMutableBytes { bytes in
+                    Darwin.read(descriptor, bytes.baseAddress, bytes.count)
+                }
+                if bytesRead < 0, errno == EINTR {
+                    continue
+                }
+                let data = bytesRead > 0 ? Data(buffer.prefix(bytesRead)) : Data()
+                await deliver(data)
+                if data.isEmpty {
+                    try? handle.close()
+                    return
+                }
+            }
+        }
     }
 
     private func sendInitializeRequest() throws {
@@ -335,8 +386,7 @@ actor CodexRPCSession {
                     "name": "codex-usage-micro",
                     "title": AppConfiguration.name,
                     "version": AppConfiguration.version,
-                ],
-                "capabilities": ["experimentalApi": true],
+                ]
             ],
         ])
     }
@@ -404,4 +454,37 @@ actor CodexRPCSession {
 private struct RPCMessageHeader: Decodable {
     let id: Int?
     let error: RPCErrorPayload?
+    let isRequestOrNotification: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case error
+        case method
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        isRequestOrNotification = container.contains(.method)
+        if let integerID = try? container.decode(Int.self, forKey: .id) {
+            id = integerID
+        } else if let stringID = try? container.decode(String.self, forKey: .id) {
+            id = Int(stringID)
+        } else {
+            id = nil
+        }
+
+        let containsError: Bool
+        if container.contains(.error) {
+            containsError = try !container.decodeNil(forKey: .error)
+        } else {
+            containsError = false
+        }
+        if containsError {
+            error =
+                (try? container.decode(RPCErrorPayload.self, forKey: .error))
+                ?? RPCErrorPayload(message: "Codex returned an error")
+        } else {
+            error = nil
+        }
+    }
 }

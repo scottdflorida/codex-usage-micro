@@ -22,16 +22,12 @@ struct JSONLineBuffer: Sendable {
         }
 
         buffer.append(data)
-        var lines: [Data] = []
+        guard let lastNewline = buffer.lastIndex(of: 0x0A) else { return [] }
 
-        while let newline = buffer.firstIndex(of: 0x0A) {
-            let line = Data(buffer[..<newline])
-            buffer.removeSubrange(...newline)
-            if !line.isEmpty {
-                lines.append(line)
-            }
-        }
-
+        let lines: [Data] = buffer.prefix(upTo: lastNewline)
+            .split(separator: 0x0A, omittingEmptySubsequences: true)
+            .map { Data($0) }
+        buffer = Data(buffer.suffix(from: buffer.index(after: lastNewline)))
         return lines
     }
 }
