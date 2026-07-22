@@ -1,27 +1,45 @@
 # Codex Usage Micro
 
-**A tiny macOS menu-bar meter for Codex usage.**
+## A tiny macOS menu-bar meter for Codex usage.
 
-See five-hour and weekly usage at a glance—without keeping a terminal open. The five-hour section appears only when Codex reports that limit for the current account.
+- No API key or separate login required
+- No third-party dependencies
+- I have a job watching Codex release notes so I can update when OpenAI changes how usage data is exposed
 
-<p align="center">
-  <img src="screenshots/plenty.png" alt="Codex Usage Micro with plenty of usage remaining" width="48%">
-  <img src="screenshots/low.png" alt="Codex Usage Micro with little usage remaining" width="48%">
-</p>
+***Get the companion meters for [Cursor/Grok](https://github.com/scottdflorida/cursor-usage-micro) and
+[Claude](https://github.com/scottdflorida/claude-usage-micro)!*** *(So you can always see which services still have
+usage remaining.)*
 
-The colored bars show **usage remaining**. The white markers show **time remaining** in each limit window. Green means usage is ahead of the clock, orange means it is behind, and red means less than 15% remains.
+<!-- Add the companion meters screenshot here. -->
 
-The menu bar uses the same compact comparison: the capsule fill shows usage remaining and its marker shows time remaining. It follows the weekly limit whenever Codex provides it, and falls back to the five-hour limit when that is the only available window.
+The purpose is to show you **how your usage is draining compared to the time left in each limit window**.
+The vertical marker inside the meter moves from right to left as the window progresses. The fill drains as usage
+is consumed.
 
-The menu-bar item permanently stacks the `Codex` name above its usage gauge. It has no display settings or numeric percentage.
+- Green when remaining usage exceeds remaining time
+- Amber when remaining usage is less than remaining time
+- Red when remaining usage is less than 15%
 
-If a refresh fails while the last reading is still inside its limit window, the app keeps showing that reading and adds a small orange `S` (stale) badge next to the brand name; the tooltip and popover explain what went wrong. Definitive states — Codex not installed, or the account signed out — clear the reading instead.
+The menu-bar gauge follows weekly usage when available and falls back to the five-hour limit when it is the only
+readable window. The five-hour limit appears only when Codex reports it for the current account.
+
+In the menu bar: meter at a glance
+
+<!-- Add the menu-bar screenshot here. -->
+
+On hover: the data that matters
+
+<!-- Add the tooltip screenshot here. -->
+
+On click: the full view
+
+<!-- Add the popover screenshot here. -->
 
 ## Requirements
 
 - macOS 13 or newer
-- Apple silicon
-- Xcode 26 or newer command line tools (Swift 6.2)
+- Apple silicon or Intel; the build targets the host architecture
+- A Swift 6.2-capable Xcode toolchain (Xcode 26 or newer)
 - The ChatGPT desktop app or an authenticated Codex CLI
 
 ## Build and run
@@ -33,40 +51,56 @@ cd codex-usage-micro
 open "build/Codex Usage Micro.app"
 ```
 
-No API key, server, database, package manager, or external dependency is required. The app launches the local Codex app server, reads the available five-hour and weekly rate-limit windows, and refreshes every five minutes. It sends no telemetry of its own.
+No API key, hosted service, app-owned database, package manager, or third-party dependency is required. The app
+launches the local Codex app server, reads the available five-hour and weekly rate-limit windows, and refreshes every
+five minutes.
+It sends no telemetry of its own.
 
-To change the automatic refresh cadence, edit [`Sources/RefreshConfiguration.swift`](Sources/RefreshConfiguration.swift) and rebuild.
-
-## Troubleshooting
-
-- **"Codex is not installed"** — the app looks for a `codex` executable inside the ChatGPT desktop app, in the Homebrew locations, and on `PATH`. Install the ChatGPT desktop app or the Codex CLI, then press Refresh.
-- **"Sign in required"** (or another account error) — the Codex app server reports usage only for an authenticated account. Sign in to the ChatGPT app, or run `codex login` in a terminal, then press Refresh.
-- **The gauge shows `!`** — the last refresh failed and no valid reading remains. Hover the menu-bar item for the exact diagnostic.
-
-## Uninstall
-
-Quit the app from the popover, then delete the app bundle (`build/Codex Usage Micro.app`, or wherever you copied it). The app writes no preferences, caches, or other files.
+To change the automatic refresh cadence, edit [`Sources/RefreshConfiguration.swift`](Sources/RefreshConfiguration.swift)
+and rebuild.
 
 ## Development
 
-The app is deliberately dependency-free. AppKit owns the menu-bar UI, while a small async client speaks newline-delimited JSON-RPC to `codex app-server --stdio`. Domain calculations and response decoding are kept independent from AppKit so they remain deterministic and testable.
-
-The response adapter treats bucket and window names as provider-owned details. It prioritizes Codex bucket metadata, identifies supported windows by duration, tolerates additive fields, and rejects ambiguous, stale, or out-of-range values. Provider-specific changes stay contained in [`Sources/CodexResponseParser.swift`](Sources/CodexResponseParser.swift).
-
-For local integrations, run the built executable with `--snapshot`. Output remains stable and line-oriented: `limit_0` is weekly usage and `limit_1` is five-hour usage; an unavailable window is omitted without renumbering the other one.
-
-Run the complete local check with:
+Run the strict local checks and build with:
 
 ```sh
 ./test.sh
 ./build.sh
 ```
 
-`test.sh` runs strict `swift-format` lint, the dependency-free unit suite, and a full Swift 6 complete-concurrency type-check with warnings treated as errors. `build.sh` produces and verifies an ad-hoc-signed app bundle in `build/`. Both scripts run in CI on macOS.
+The app has no third-party dependencies. A small async client speaks newline-delimited JSON-RPC to
+`codex app-server --stdio`, while AppKit consumes a deterministic usage model. The response adapter tolerates
+additive fields, prioritizes Codex bucket metadata, identifies supported windows by duration, and fails closed on
+ambiguous, stale, or out-of-range values.
+
+Provider churn is intentionally localized: session mechanics live in `CodexClient`, wire decoding and source
+selection live in `CodexResponseParser`, and refresh retention lives in `RefreshFailurePolicy`. A transient launch,
+connection, timeout, or schema failure keeps an unexpired report visible as explicitly stale. A missing executable or
+account error clears the reading.
+
+For local integrations, run the built executable with `--snapshot`. Output is stable and line-oriented: `limit_0` is
+weekly usage and `limit_1` is five-hour usage. An unavailable window is omitted without renumbering the other one.
+
+## Troubleshooting
+
+- **"Codex is not installed"**: the app checks inside the ChatGPT desktop app, the Homebrew locations, and every
+  absolute `PATH` entry. Install ChatGPT or the Codex CLI, then press Refresh.
+- **"Sign in required" or another account error**: sign in to ChatGPT or run `codex login` in a terminal, then
+  press Refresh.
+- **The gauge shows `!`**: hover over the menu-bar item for the exact diagnostic. Run
+  `"build/Codex Usage Micro.app/Contents/MacOS/CodexUsageMicro" --snapshot` for a direct provider check.
+
+## Uninstall
+
+Quit the app from its popover, then delete `build/Codex Usage Micro.app` or wherever you copied it. The app writes no
+preferences, caches, login items, or other support files.
 
 ## Privacy and security
 
-The app launches the locally installed Codex executable and reads only the account rate-limit response. It does not accept network connections, persist account data, execute shell commands, or send telemetry of its own. The Codex process inherits the normal local Codex configuration and authentication context.
+The app launches the locally installed Codex executable directly and reads only the account rate-limit response. It
+does not accept network connections, persist account data, invoke a shell, or send telemetry of its own. JSON-RPC
+responses must match the active request, output and diagnostics are bounded and sanitized, and stalled sessions are
+terminated under a 12-second deadline. Codex inherits the user's existing local configuration and authentication.
 
 ## License
 
