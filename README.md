@@ -21,7 +21,7 @@ If a refresh fails while the last reading is still inside its limit window, the 
 
 - macOS 13 or newer
 - Apple silicon
-- Xcode 16 or newer command line tools (Swift 6)
+- Xcode 26 or newer command line tools (Swift 6.2)
 - The ChatGPT desktop app or an authenticated Codex CLI
 
 ## Build and run
