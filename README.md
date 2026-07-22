@@ -3,7 +3,7 @@
 ## A tiny macOS menu-bar meter for Codex usage.
 - No API key or separate login required
 - No third-party dependencies
-- I have a job watching Codex release notes so I can update when OpenAI changes how usage data is exposed
+- I have daily release-notes watch and canary probes running so I can quickly react and update this app whenever they change how usage data is exposed
 
 ***Get the companion meters for [Cursor/Grok](https://github.com/scottdflorida/cursor-usage-micro) and
 [Claude](https://github.com/scottdflorida/claude-usage-micro)!*** *(So you can always see which services still have
