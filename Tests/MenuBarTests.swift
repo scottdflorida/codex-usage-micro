@@ -89,6 +89,47 @@ func menuBarTests() -> [TestCase] {
             }
             try expectEqual(fiveHourReading.usageRemainingPercent, 38)
         },
+        TestCase(name: "menu-bar display ignores per-model buckets") {
+            let weekly = snapshot(
+                usedPercent: 21,
+                windowMinutes: 10_080,
+                resetOffset: 302_400
+            )
+            let model = ModelUsage(
+                limitId: "codex_bengalfox",
+                displayName: "GPT-5.3-Codex-Spark",
+                snapshot: snapshot(usedPercent: 80, windowMinutes: 10_080, resetOffset: 302_400)
+            )
+            guard let withModels = UsageReport(weekly: weekly, fiveHour: nil, models: [model]) else {
+                throw TestFailure(description: "Invalid menu-bar report fixture")
+            }
+
+            try expectEqual(
+                MenuBarDisplayState.live(report: withModels, at: now),
+                MenuBarDisplayState.live(report: report(weekly: weekly, fiveHour: nil), at: now)
+            )
+        },
+        TestCase(name: "tooltip and accessibility lines follow one compact convention") {
+            let weekly = snapshot(usedPercent: 21, windowMinutes: 10_080, resetOffset: 302_400)
+            let fiveHour = snapshot(usedPercent: 62, windowMinutes: 300, resetOffset: 9_000)
+
+            try expectEqual(
+                UsageRowText.toolTip(name: "Weekly", snapshot: weekly, at: now),
+                "Weekly · Usage left 79% · Week left 50%"
+            )
+            try expectEqual(
+                UsageRowText.toolTip(name: "GPT-5.3-Codex-Spark", snapshot: fiveHour, at: now),
+                "GPT-5.3-Codex-Spark · Usage left 38% · Time left 50%"
+            )
+            try expectEqual(
+                UsageRowText.accessibility(name: "weekly", snapshot: weekly, at: now),
+                "weekly usage remaining 79 percent, week remaining 50 percent"
+            )
+            try expectEqual(
+                UsageRowText.accessibility(name: "five-hour", snapshot: fiveHour, at: now),
+                "five-hour usage remaining 38 percent, time remaining 50 percent"
+            )
+        },
         TestCase(name: "stale freshness keeps the gauge reading") {
             let weekly = snapshot(
                 usedPercent: 21,

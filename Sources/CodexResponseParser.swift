@@ -22,7 +22,13 @@ enum CodexResponseParser {
 
     private struct LimitSource {
         let priority: SourcePriority
+        let identifiers: Set<String>
         let snapshot: RateLimitSnapshot
+    }
+
+    private struct ResolvedWindow {
+        let snapshot: UsageSnapshot
+        let sourceIdentifiers: Set<String>
     }
 
     private enum SnapshotResolution {
@@ -57,22 +63,38 @@ enum CodexResponseParser {
         let sources = limitSources(from: result)
         let weekly = preferredSnapshot(for: .weekly, from: sources, now: now)
         let fiveHour = preferredSnapshot(for: .fiveHour, from: sources, now: now)
+        let mainPoolIdentifiers = (weekly?.sourceIdentifiers ?? [])
+            .union(fiveHour?.sourceIdentifiers ?? [])
 
-        guard let report = UsageReport(weekly: weekly, fiveHour: fiveHour) else {
+        guard
+            let report = UsageReport(
+                weekly: weekly?.snapshot,
+                fiveHour: fiveHour?.snapshot,
+                models: modelUsages(from: result, excluding: mainPoolIdentifiers, now: now)
+            )
+        else {
             throw CodexResponseParsingError.missingUsableWindow
         }
         return report
     }
 
     private static func limitSources(from result: RateLimitsResult) -> [LimitSource] {
-        let namedSources = (result.rateLimitsByLimitId ?? [:])
+        let allNamedSources = (result.rateLimitsByLimitId ?? [:])
             .sorted { $0.key < $1.key }
             .map { identifier, snapshot in
                 LimitSource(
                     priority: namedSourcePriority(identifier: identifier, snapshot: snapshot),
+                    identifiers: Set([identifier, snapshot.limitId].compactMap { $0 }),
                     snapshot: snapshot
                 )
             }
+
+        let hasAuthoritativeMainSource =
+            result.rateLimits != nil
+            || allNamedSources.contains { $0.priority == .exactCodex }
+        let namedSources = allNamedSources.filter { source in
+            !hasAuthoritativeMainSource || !isPerModelBucket(source)
+        }
         let unknownSourceCount = namedSources.count { $0.priority == .unknown }
         var sources = namedSources.filter { $0.priority != .unknown || unknownSourceCount == 1 }
 
@@ -81,9 +103,25 @@ enum CodexResponseParser {
         // unambiguous. This lets bucket identifiers evolve without guessing across conflicting
         // products or plans.
         if let legacy = result.rateLimits {
-            sources.append(LimitSource(priority: .legacy, snapshot: legacy))
+            sources.append(
+                LimitSource(
+                    priority: .legacy,
+                    identifiers: Set([legacy.limitId].compactMap { $0 }),
+                    snapshot: legacy
+                )
+            )
         }
         return sources
+    }
+
+    // Once an exact or legacy account-wide source exists, a labeled non-exact bucket is
+    // model-specific and cannot fill a missing main window. Without an authoritative source,
+    // it remains eligible as a forward-compatible main bucket when it is unambiguous.
+    private static func isPerModelBucket(_ source: LimitSource) -> Bool {
+        guard let limitName = source.snapshot.limitName, !limitName.isEmpty else {
+            return false
+        }
+        return source.priority != .exactCodex
     }
 
     private static func namedSourcePriority(
@@ -106,9 +144,9 @@ enum CodexResponseParser {
         for limitWindow: LimitWindow,
         from sources: [LimitSource],
         now: Date
-    ) -> UsageSnapshot? {
+    ) -> ResolvedWindow? {
         for priority in SourcePriority.allCases {
-            var uniqueCandidates: [UsageSnapshot] = []
+            var uniqueCandidates: [ResolvedWindow] = []
             for source in sources where source.priority == priority {
                 switch resolveSnapshot(
                     matchingDurationMinutes: limitWindow.durationMinutes,
@@ -118,8 +156,16 @@ enum CodexResponseParser {
                 case .missing:
                     continue
                 case .value(let candidate):
-                    if !uniqueCandidates.contains(candidate) {
-                        uniqueCandidates.append(candidate)
+                    if let index = uniqueCandidates.firstIndex(where: { $0.snapshot == candidate }) {
+                        uniqueCandidates[index] = ResolvedWindow(
+                            snapshot: candidate,
+                            sourceIdentifiers: uniqueCandidates[index].sourceIdentifiers
+                                .union(source.identifiers)
+                        )
+                    } else {
+                        uniqueCandidates.append(
+                            ResolvedWindow(snapshot: candidate, sourceIdentifiers: source.identifiers)
+                        )
                     }
                 case .ambiguous:
                     return nil
@@ -167,9 +213,18 @@ enum CodexResponseParser {
         now: Date
     ) -> UsageSnapshot? {
         guard
+            let snapshot = makeSnapshot(from: window, now: now),
+            snapshot.windowDurationMinutes == expectedDurationMinutes
+        else {
+            return nil
+        }
+        return snapshot
+    }
+
+    private static func makeSnapshot(from window: RateLimitWindow, now: Date) -> UsageSnapshot? {
+        guard
             let usedPercent = window.usedPercent,
             let windowDurationMinutes = window.windowDurationMinutes,
-            windowDurationMinutes == expectedDurationMinutes,
             let resetTimestamp = window.resetsAt
         else {
             return nil
@@ -189,6 +244,52 @@ enum CodexResponseParser {
             windowDurationMinutes: windowDurationMinutes,
             resetsAt: resetsAt
         )
+    }
+
+    private static func modelUsages(
+        from result: RateLimitsResult,
+        excluding mainPoolIdentifiers: Set<String>,
+        now: Date
+    ) -> [ModelUsage] {
+        // A per-model row carries the provider's label, sanitized for display, and must
+        // never restate the bucket that already feeds the main pool.
+        let candidates = (result.rateLimitsByLimitId ?? [:])
+            .compactMap { identifier, bucket -> ModelUsage? in
+                let limitId = bucket.limitId ?? identifier
+                let displayName = DiagnosticText.sanitizedName(bucket.limitName ?? "")
+                guard
+                    !displayName.isEmpty,
+                    isSnapshotSafeLimitId(limitId),
+                    !mainPoolIdentifiers.contains(identifier),
+                    !mainPoolIdentifiers.contains(limitId),
+                    let primaryWindow = bucket.windows.first,
+                    let snapshot = makeSnapshot(from: primaryWindow, now: now)
+                else {
+                    return nil
+                }
+                return ModelUsage(limitId: limitId, displayName: displayName, snapshot: snapshot)
+            }
+
+        // A duplicated limit id is ambiguous, so every claimant is dropped.
+        let rowsPerLimitId = Dictionary(grouping: candidates, by: \.limitId).mapValues(\.count)
+        return Array(
+            candidates
+                .filter { rowsPerLimitId[$0.limitId] == 1 }
+                .sorted { $0.limitId < $1.limitId }
+                .prefix(AppConfiguration.maximumModelRows)
+        )
+    }
+
+    // A limit id becomes a model_<limitId> key in the line-oriented --snapshot contract;
+    // anything outside that alphabet fails closed.
+    private static func isSnapshotSafeLimitId(_ value: String) -> Bool {
+        (1...64).contains(value.unicodeScalars.count)
+            && value.unicodeScalars.allSatisfy { scalar in
+                switch scalar {
+                case "A"..."Z", "a"..."z", "0"..."9", "_", ".", "-": true
+                default: false
+                }
+            }
     }
 
     private static func isExactCodexIdentifier(_ value: String?) -> Bool {

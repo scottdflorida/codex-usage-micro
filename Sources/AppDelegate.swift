@@ -183,26 +183,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         var toolTipLines: [String] = []
         var accessibilityDetails: [String] = []
         if let fiveHour = report.fiveHour {
-            let reading = fiveHour.reading(at: date)
-            toolTipLines.append(
-                "5-hour · Usage left \(reading.usageRemainingPercent)% · "
-                    + "Time left \(reading.timeRemainingPercent)%"
-            )
+            toolTipLines.append(UsageRowText.toolTip(name: "5-hour", snapshot: fiveHour, at: date))
             accessibilityDetails.append(
-                "five-hour usage remaining \(reading.usageRemainingPercent) percent, "
-                    + "time remaining \(reading.timeRemainingPercent) percent"
+                UsageRowText.accessibility(name: "five-hour", snapshot: fiveHour, at: date)
             )
         }
 
         if let weekly = report.weekly {
-            let reading = weekly.reading(at: date)
+            toolTipLines.append(UsageRowText.toolTip(name: "Weekly", snapshot: weekly, at: date))
+            accessibilityDetails.append(
+                UsageRowText.accessibility(name: "weekly", snapshot: weekly, at: date)
+            )
+        }
+
+        for model in report.models {
             toolTipLines.append(
-                "Weekly · Usage left \(reading.usageRemainingPercent)% · "
-                    + "Week left \(reading.timeRemainingPercent)%"
+                UsageRowText.toolTip(name: model.displayName, snapshot: model.snapshot, at: date)
             )
             accessibilityDetails.append(
-                "weekly usage remaining \(reading.usageRemainingPercent) percent, "
-                    + "week remaining \(reading.timeRemainingPercent) percent"
+                UsageRowText.accessibility(name: model.displayName, snapshot: model.snapshot, at: date)
             )
         }
 

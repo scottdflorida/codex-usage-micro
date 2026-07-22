@@ -3,14 +3,14 @@ import Foundation
 func refreshFailurePolicyTests() -> [TestCase] {
     let now = Date(timeIntervalSince1970: 1_700_000_000)
 
-    func report(resetsAt: Date) -> UsageReport {
+    func report(resetsAt: Date, models: [ModelUsage] = []) -> UsageReport {
         guard
             let snapshot = UsageSnapshot(
                 usedPercent: 25,
                 windowDurationMinutes: 10_080,
                 resetsAt: resetsAt
             ),
-            let report = UsageReport(weekly: snapshot, fiveHour: nil)
+            let report = UsageReport(weekly: snapshot, fiveHour: nil, models: models)
         else {
             preconditionFailure("Invalid refresh-policy test fixture")
         }
@@ -72,6 +72,30 @@ func refreshFailurePolicyTests() -> [TestCase] {
                     at: now
                 ),
                 "expected an expired stale window to clear"
+            )
+        },
+        TestCase(name: "an unexpired per-model window preserves a stale report") {
+            guard
+                let modelSnapshot = UsageSnapshot(
+                    usedPercent: 25,
+                    windowDurationMinutes: 10_080,
+                    resetsAt: now.addingTimeInterval(60)
+                )
+            else {
+                preconditionFailure("Invalid refresh-policy test fixture")
+            }
+            let model = ModelUsage(
+                limitId: "codex_bengalfox",
+                displayName: "GPT-5.3-Codex-Spark",
+                snapshot: modelSnapshot
+            )
+            try expect(
+                RefreshFailurePolicy.preservesLastReport(
+                    for: CodexClientError.invalidResponse,
+                    report: report(resetsAt: now, models: [model]),
+                    at: now
+                ),
+                "expected the per-model window to preserve the stale report"
             )
         },
     ]
