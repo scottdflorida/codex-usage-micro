@@ -10,6 +10,10 @@ test_sources=(${source_files:#*/CodexUsageMicro.swift})
 test_files=("$project_dir"/Tests/*.swift)
 test_binary="$project_dir/build/CodexUsageMicroTests"
 
+for script in "$project_dir/build.sh" "$project_dir/install.sh" "$project_dir/package-release.sh"; do
+  zsh -n "$script"
+done
+
 mkdir -p "$module_cache"
 
 xcrun swift-format lint \

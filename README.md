@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/scottdflorida/codex-usage-micro/actions/workflows/ci.yml/badge.svg)](https://github.com/scottdflorida/codex-usage-micro/actions/workflows/ci.yml)
 
+[Latest source release](https://github.com/scottdflorida/codex-usage-micro/releases/latest)
+
 ## A tiny macOS menu-bar meter for Codex usage.
 - No API key or separate login required
 - No third-party dependencies
@@ -40,14 +42,19 @@ On click: the full view
 - A Swift 6.2-capable Xcode toolchain (Xcode 26 or newer)
 - The ChatGPT desktop app or an authenticated Codex CLI
 
-## Build and run
+## Install from source
+
+Prebuilt downloads are not currently provided. The installer compiles the app on your Mac, copies it to
+`~/Applications`, and opens it.
 
 ```sh
 git clone https://github.com/scottdflorida/codex-usage-micro.git
 cd codex-usage-micro
-./build.sh
-open "build/Codex Usage Micro.app"
+./install.sh
 ```
+
+To update later, run `git pull` in the checkout and then run `./install.sh` again. Use `./install.sh --no-launch`
+when you want to install without opening the app immediately.
 
 No API key, hosted service, app-owned database, package manager, or third-party dependency is required. The app
 launches the local Codex app server, reads the available five-hour and weekly rate-limit windows, and refreshes every
@@ -86,12 +93,12 @@ weekly usage and `limit_1` is five-hour usage. An unavailable window is omitted 
 - **"Sign in required" or another account error**: sign in to ChatGPT or run `codex login` in a terminal, then
   press Refresh.
 - **The gauge shows `!`**: hover over the menu-bar item for the exact diagnostic. Run
-  `"build/Codex Usage Micro.app/Contents/MacOS/CodexUsageMicro" --snapshot` for a direct provider check.
+  `"$HOME/Applications/Codex Usage Micro.app/Contents/MacOS/CodexUsageMicro" --snapshot` for a direct provider check.
 
 ## Uninstall
 
-Quit the app from its popover, then delete `build/Codex Usage Micro.app` or wherever you copied it. The app writes no
-preferences, caches, login items, or other support files.
+Quit the app from its popover, then delete `~/Applications/Codex Usage Micro.app`. The app writes no preferences,
+caches, login items, or other support files.
 
 ## Privacy and security
 
